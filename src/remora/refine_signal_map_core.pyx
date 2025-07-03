@@ -23,6 +23,7 @@ ctypedef void (*core_func_ptr)(
     const float[::1],  # dwell_penalty
 )
 
+cdef str PATH = "PATH/TO/remora_log.txt"
 
 ###########
 # Banding #
@@ -177,6 +178,9 @@ cdef void banded_forward_dwell_penalty_step(
     cdef int band_pos, dwell_idx
     cdef float running_pos_score, pos_score
 
+    with open(PATH, "a") as f:
+        f.write(f"# viterbi\n")
+
     # compute un-penalized band position scores for lookup after dwell_penalty
     # range is searched
     cdef float[::1] unpen_scores = np.empty_like(curr_scores)
@@ -190,6 +194,8 @@ cdef void banded_forward_dwell_penalty_step(
         band_start_diff,
         dwell_penalty,
     )
+    with open(PATH, "a") as f:
+        f.write(f"# viterbi_finished\n")
 
     # loop over signal positions within this base band
     for band_pos in range(curr_scores.shape[0]):
@@ -252,6 +258,8 @@ cdef void banded_forward_dwell_penalty_step(
                     + dwell_penalty.shape[0]
                 )
 
+        with open(PATH, "a") as f:
+            f.write(f"{band_pos}\t{unpen_scores[band_pos]:.16f}\t{unpen_tb[band_pos]}\t{curr_scores[band_pos]:.16f}\t{curr_tb[band_pos]}\n")
 
 cdef void banded_forward_vit_step(
     float[::1] curr_scores,
@@ -279,42 +287,73 @@ cdef void banded_forward_vit_step(
             current and previous base
         sdp (unused): Unused parameter for this core method
     """
+
     cdef int band_pos
     cdef float base_score, move_score, stay_score
-    # compute start position in band
-    if band_start_diff == 0:
-        # if this is a "stay" band start, set invalid score and traceback
-        curr_scores[0] = LARGE_SCORE + prev_scores[prev_scores.shape[0] - 1]
-        curr_tb[0] = -1
-    else:
-        # else compute move score for start of base band
-        base_score = score(curr_level, curr_signal[0])
-        curr_scores[0] = prev_scores[band_start_diff - 1] + base_score
-        curr_tb[0] = 0
-        # clip prev_scores to start at same position as curr_scores
-        prev_scores = prev_scores[band_start_diff:]
-    # if base bands are the same
-    if prev_scores.shape[0] == curr_scores.shape[0]:
-        prev_scores = prev_scores[:prev_scores.shape[0] - 1]
-
-    # compute scores where curr and prev base overlap
-    for band_pos in range(1, prev_scores.shape[0] + 1):
-        base_score = score(curr_level, curr_signal[band_pos])
-        move_score = prev_scores[band_pos - 1] + base_score
-        stay_score = curr_scores[band_pos - 1] + base_score
-        if move_score < stay_score:
-            curr_scores[band_pos] = move_score
-            curr_tb[band_pos] = 0
+    
+    with open(PATH, "a") as f:
+        f.write("# start\n")
+        # compute start position in band
+        if band_start_diff == 0:
+            # if this is a "stay" band start, set invalid score and traceback
+            curr_scores[0] = LARGE_SCORE + prev_scores[prev_scores.shape[0] - 1]
+            curr_tb[0] = -1
         else:
-            curr_scores[band_pos] = stay_score
-            curr_tb[band_pos] = curr_tb[band_pos - 1] + 1
+            f.write("0\t")
+            # else compute move score for start of base band
+            base_score = score(curr_level, curr_signal[0])
+            f.write(f"{base_score:.16f}\t")
+            curr_scores[0] = prev_scores[band_start_diff - 1] + base_score
+            f.write(f"{(prev_scores[band_start_diff - 1] + base_score):.16f}\t")
+            f.write("NA\t")
+            f.write("move\t0\n")
+            curr_tb[0] = 0
+            # clip prev_scores to start at same position as curr_scores
+            prev_scores = prev_scores[band_start_diff:]
+        # if base bands are the same
+        if prev_scores.shape[0] == curr_scores.shape[0]:
+            prev_scores = prev_scores[:prev_scores.shape[0] - 1]
 
-    # stay through rest of the band
-    for band_pos in range(prev_scores.shape[0] + 1, curr_scores.shape[0]):
-        base_score = score(curr_level, curr_signal[band_pos])
-        stay_score = curr_scores[band_pos - 1] + base_score
-        curr_scores[band_pos] = stay_score
-        curr_tb[band_pos] = curr_tb[band_pos - 1] + 1
+        f.write("# overlap\n")
+        # compute scores where curr and prev base overlap
+        for band_pos in range(1, prev_scores.shape[0] + 1):
+            f.write(f"{band_pos}\t")
+
+            base_score = score(curr_level, curr_signal[band_pos])
+            f.write(f"{base_score:.16f}\t")
+
+            move_score = prev_scores[band_pos - 1] + base_score
+            f.write(f"{move_score:.16f}\t")
+
+            stay_score = curr_scores[band_pos - 1] + base_score
+            f.write(f"{stay_score:.16f}\t")
+            
+            if move_score < stay_score:
+                curr_scores[band_pos] = move_score
+                curr_tb[band_pos] = 0
+                f.write("move\t0\n")
+
+            else:
+                curr_scores[band_pos] = stay_score
+                curr_tb[band_pos] = curr_tb[band_pos - 1] + 1
+                f.write(f"stay\t{curr_tb[band_pos - 1] + 1}\n")
+
+        f.write("# rest\n")
+        # stay through rest of the band
+        for band_pos in range(prev_scores.shape[0] + 1, curr_scores.shape[0]):
+            f.write(f"{band_pos}\t")
+
+            base_score = score(curr_level, curr_signal[band_pos])
+            f.write(f"{base_score:.16f}\t")
+            f.write("NA\t")
+
+            stay_score = curr_scores[band_pos - 1] + base_score
+            f.write(f"{stay_score:.16f}\t")
+
+            curr_scores[band_pos] = stay_score
+
+            curr_tb[band_pos] = curr_tb[band_pos - 1] + 1
+            f.write(f"stay\t{curr_tb[band_pos - 1] + 1}\n")
 
 
 cdef void banded_forward_dp(
@@ -347,6 +386,9 @@ cdef void banded_forward_dp(
         core_method (str): Core method to use for forward pass path scoring.
             "Viterbi" and "dwell_penalty" are implemented.
     """
+    with open(PATH, "w") as f:
+        f.write("band_pos\tbase_score\tmove_score\tstay_score\taction\ttb_value\n")
+
     cdef core_func_ptr core_method_func
     if core_method == REFINE_ALGO_VIT_NAME:
         core_method_func = banded_forward_vit_step
@@ -367,6 +409,8 @@ cdef void banded_forward_dp(
     # spoof previous scores to force stays through first base
     prev_scores = np.full(curr_bw, HUGE_VALF, dtype=np.float32)
     prev_scores[0] = 0
+    with open(PATH, "a") as f:
+        f.write(f"# base=0 from=0 to={curr_bw} band_start=0 band_end={curr_bw}\n")
     core_method_func(
         all_scores[:curr_bw],
         traceback[:curr_bw],
@@ -386,6 +430,8 @@ cdef void banded_forward_dp(
         curr_bw = curr_band_en - curr_band_st
         curr_offset = base_offsets[base_idx]
         # compute all scores and traceback for this base
+        with open(PATH, "a") as f:
+            f.write(f"# base={base_idx} from={curr_offset} to={curr_offset + curr_bw} band_start={curr_band_st} band_end={curr_band_en}\n")
         core_method_func(
             all_scores[curr_offset:curr_offset + curr_bw],
             traceback[curr_offset:curr_offset + curr_bw],
@@ -470,6 +516,9 @@ def seq_banded_dp(
     path = np.empty(levels.shape[0] + 1, dtype=np.int32)
     # perform traceback and full path
     banded_traceback(path, seq_band, base_offsets, traceback)
+    with open(PATH, "a") as f:
+        f.write(f"# path="+",".join(str(i) for i in path))
+
     return all_scores, path, traceback, base_offsets
 
 
