@@ -1,0 +1,1 @@
+Contains a single read `0cb6593a-8cdd-4ea6-93c3-8d6376805a7e` from the GIAB dataset.
